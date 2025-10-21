@@ -1,122 +1,363 @@
 import 'package:flutter/material.dart';
+import 'database_helper.dart';
 
-void main() {
+final dbHelper = DatabaseHelper();
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await dbHelper.init();
   runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      debugShowCheckedModeBanner: false,
+      title: 'Card Organizer',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
+        colorSchemeSeed: Colors.teal,
+        brightness: Brightness.light,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const FoldersPage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
+class FoldersPage extends StatefulWidget {
+  const FoldersPage({super.key});
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<FoldersPage> createState() => _FoldersPageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _FoldersPageState extends State<FoldersPage> {
+  late Future<List<Map<String, dynamic>>> _folders;
 
-  void _incrementCounter() {
+  @override
+  void initState() {
+    super.initState();
+    _folders = dbHelper.fetchFolders();
+  }
+
+  Future<int> _count(int id) => dbHelper.countCardsInFolder(id);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Folders', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 24)),
+        centerTitle: true,
+      ),
+      body: FutureBuilder<List<Map<String, dynamic>>>(
+        future: _folders,
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final folders = snapshot.data!;
+          return ListView.separated(
+            padding: const EdgeInsets.all(16),
+            itemCount: folders.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 12),
+            itemBuilder: (context, i) {
+              final f = folders[i];
+              return FutureBuilder<int>(
+                future: _count(f[DatabaseHelper.foldersColId] as int),
+                builder: (context, countSnap) {
+                  final count = countSnap.data ?? 0;
+                  return ListTile(
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    tileColor: Colors.teal.withAlpha(20),
+                    title: Text(f[DatabaseHelper.foldersColName] as String, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                    subtitle: Text('$count cards'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => CardsPage(folderId: f[DatabaseHelper.foldersColId] as int),
+                      )).then((_) {
+                        setState(() {
+                          _folders = dbHelper.fetchFolders();
+                        });
+                      });
+                    },
+                  );
+                },
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+class CardsPage extends StatefulWidget {
+  final int folderId;
+  const CardsPage({super.key, required this.folderId});
+  @override
+  State<CardsPage> createState() => _CardsPageState();
+}
+
+class _CardsPageState extends State<CardsPage> {
+  late Future<Map<String, dynamic>?> _folder;
+  late Future<List<Map<String, dynamic>>> _cards;
+
+  @override
+  void initState() {
+    super.initState();
+    _folder = dbHelper.getFolderById(widget.folderId);
+    _cards = dbHelper.fetchCardsForFolder(widget.folderId);
+  }
+
+  void _refresh() {
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _cards = dbHelper.fetchCardsForFolder(widget.folderId);
     });
+  }
+
+  Future<void> _addCardDialog(Map<String, dynamic> folder) async {
+    final nameCtrl = TextEditingController();
+    final imageCtrl = TextEditingController();
+    String suit = folder[DatabaseHelper.foldersColName] as String;
+    final currentCount = await dbHelper.countCardsInFolder(widget.folderId);
+    if (currentCount >= 6) {
+      await showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Limit Reached'),
+          content: const Text('This folder can only hold 6 cards.'),
+          actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
+        ),
+      );
+      return;
+    }
+    await showDialog(
+      context: context,
+      builder: (_) {
+        return AlertDialog(
+          title: const Text('Add Card'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Name (e.g., Ace of Hearts)')),
+              TextField(controller: imageCtrl, decoration: const InputDecoration(labelText: 'Image URL (optional)')),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                initialValue: suit,
+                items: const [
+                  DropdownMenuItem(value: 'Hearts', child: Text('Hearts')),
+                  DropdownMenuItem(value: 'Spades', child: Text('Spades')),
+                  DropdownMenuItem(value: 'Diamonds', child: Text('Diamonds')),
+                  DropdownMenuItem(value: 'Clubs', child: Text('Clubs')),
+                ],
+                onChanged: (v) => suit = v ?? suit,
+                decoration: const InputDecoration(labelText: 'Suit'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                final name = nameCtrl.text.trim();
+                final img = imageCtrl.text.trim();
+                if (name.isEmpty) return;
+                final countNow = await dbHelper.countCardsInFolder(widget.folderId);
+                if (countNow >= 6) {
+                  return;
+                }
+                await dbHelper.addCard(name: name, suit: suit, folderId: widget.folderId, imageUrl: img);
+                if (mounted) Navigator.pop(context);
+                _refresh();
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _editCardDialog(Map<String, dynamic> card, Map<String, dynamic> folder) async {
+    final nameCtrl = TextEditingController(text: card[DatabaseHelper.cardsColName] as String);
+    final imageCtrl = TextEditingController(text: (card[DatabaseHelper.cardsColImageUrl] as String?) ?? '');
+    String suit = card[DatabaseHelper.cardsColSuit] as String;
+    int targetFolderId = widget.folderId;
+    await showDialog(
+      context: context,
+      builder: (_) {
+        return AlertDialog(
+          title: const Text('Edit Card'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Name')),
+              TextField(controller: imageCtrl, decoration: const InputDecoration(labelText: 'Image URL')),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                initialValue: suit,
+                items: const [
+                  DropdownMenuItem(value: 'Hearts', child: Text('Hearts')),
+                  DropdownMenuItem(value: 'Spades', child: Text('Spades')),
+                  DropdownMenuItem(value: 'Diamonds', child: Text('Diamonds')),
+                  DropdownMenuItem(value: 'Clubs', child: Text('Clubs')),
+                ],
+                onChanged: (v) => suit = v ?? suit,
+                decoration: const InputDecoration(labelText: 'Suit'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                final name = nameCtrl.text.trim();
+                final img = imageCtrl.text.trim();
+                if (name.isEmpty) return;
+                await dbHelper.updateCard(
+                  id: card[DatabaseHelper.cardsColId] as int,
+                  name: name,
+                  suit: suit,
+                  folderId: targetFolderId,
+                  imageUrl: img,
+                );
+                if (mounted) Navigator.pop(context);
+                _refresh();
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _deleteCard(int id) async {
+    await dbHelper.deleteCard(id);
+    _refresh();
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
+    return FutureBuilder<Map<String, dynamic>?>(
+      future: _folder,
+      builder: (context, folderSnap) {
+        if (!folderSnap.hasData) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+        final folder = folderSnap.data!;
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(folder[DatabaseHelper.foldersColName] as String, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 22)),
+            centerTitle: true,
+          ),
+          body: Column(
+            children: [
+              FutureBuilder<int>(
+                future: dbHelper.countCardsInFolder(widget.folderId),
+                builder: (context, cntSnap) {
+                  final c = cntSnap.data ?? 0;
+                  if (c >= 3) return const SizedBox.shrink();
+                  return Container(
+                    margin: const EdgeInsets.all(12),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withAlpha(30),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.warning_amber_rounded),
+                        SizedBox(width: 8),
+                        Expanded(child: Text('You need at least 3 cards in this folder.')),
+                      ],
+                    ),
+                  );
+                },
+              ),
+              Expanded(
+                child: FutureBuilder<List<Map<String, dynamic>>>(
+                  future: _cards,
+                  builder: (context, snapshot) {
+                    if (!snapshot.hasData) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    final cards = snapshot.data!;
+                    if (cards.isEmpty) {
+                      return const Center(child: Text('No cards'));
+                    }
+                    return GridView.builder(
+                      padding: const EdgeInsets.all(16),
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2,
+                        childAspectRatio: 3 / 4,
+                        crossAxisSpacing: 12,
+                        mainAxisSpacing: 12,
+                      ),
+                      itemCount: cards.length,
+                      itemBuilder: (context, i) {
+                        final card = cards[i];
+                        final name = card[DatabaseHelper.cardsColName] as String;
+                        final url = (card[DatabaseHelper.cardsColImageUrl] as String?) ?? '';
+                        return InkWell(
+                          onTap: () => _editCardDialog(card, folder),
+                          child: Card(
+                            elevation: 2,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                            child: Column(
+                              children: [
+                                Expanded(
+                                  child: url.isEmpty
+                                      ? Container(
+                                          alignment: Alignment.center,
+                                          child: Text(name.split(' ').first, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+                                        )
+                                      : ClipRRect(
+                                          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                                          child: Image.network(url, width: double.infinity, height: double.infinity, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Center(child: Icon(Icons.image_not_supported))),
+                                        ),
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.all(8.0),
+                                  child: Row(
+                                    children: [
+                                      Expanded(child: Text(name, maxLines: 2, overflow: TextOverflow.ellipsis)),
+                                      PopupMenuButton<String>(
+                                        onSelected: (v) {
+                                          if (v == 'edit') {
+                                            _editCardDialog(card, folder);
+                                          } else if (v == 'delete') {
+                                            _deleteCard(card[DatabaseHelper.cardsColId] as int);
+                                          }
+                                        },
+                                        itemBuilder: (context) => const [
+                                          PopupMenuItem(value: 'edit', child: Text('Edit')),
+                                          PopupMenuItem(value: 'delete', child: Text('Delete')),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+          floatingActionButton: FloatingActionButton.extended(
+            onPressed: () => _addCardDialog(folder),
+            label: const Text('Add Card'),
+            icon: const Icon(Icons.add),
+          ),
+        );
+      },
     );
   }
 }
